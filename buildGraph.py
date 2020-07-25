@@ -6,6 +6,8 @@ import json
 from bs4 import BeautifulSoup
 import requests
 from optparse import OptionParser
+import scriptures
+import spacy
 
 from bwlists import *
 
@@ -21,6 +23,12 @@ parser.add_option("-q", "--quiet",
 parser.add_option("-c", "--citations",
                   action="store_false", dest="usecitations", default=True,
                   help="don't use citations")
+parser.add_option("-b", "--bible",
+                  action="store_false", dest="usebible", default=True,
+                  help="don't extract bible references")
+parser.add_option("-n", "--ne",
+                  action="store_false", dest="usene", default=True,
+                  help="don't extract named entities")
 parser.add_option("-x", "--no-ixt",
                   action="store_false", dest="useixt", default=True,
                   help="use IXTheo")
@@ -132,7 +140,8 @@ for journal in journals:
             for file in files:
                 try:
                     # Lese das PDF
-                    print (file)
+                    if not options.verbose:
+                        print (file)
                     node_dict = {}
                     node_dict['PublicationYear'] = year
                     node_dict['Issue'] = issue
@@ -569,6 +578,136 @@ for journal in journals:
                 except Exception as e:
                     if not options.verbose:
                         print("Exception: "+str(e))
+
+# Now working with the full text, NER and bible references
+for journal in journals:
+    journalname = journal.split("/")[-1]
+    if not options.verbose:
+        print ("In Journal "+journalname)
+    journallist.append (journalname)
+    years = [ f.path for f in os.scandir(journal) if f.is_dir() ]
+    for yearf in years:
+        year = yearf.split("/")[-1]
+        #print ("===============")
+        #print ("In Year "+year)
+        issues = [ f.path for f in os.scandir(yearf) if f.is_dir() ]
+        for issuef in issues:
+            issue = issuef.split("/")[-1]
+            #print ("In issue "+issue)
+            files = []
+            for dirpath, dirnames, filenames in os.walk(issuef):
+                for filename in [f for f in filenames if f.endswith(".pdf")]:
+                    files.append(os.path.join(dirpath, filename))
+            #if not options.verbose:
+            #    print (issuef + ":" +str(files))
+            total = total + len(files)
+            for file in files:
+                try:
+                    # Lese das PDF
+                    if not options.verbose:
+                        print (file)
+                    read_pdf = PyPDF2.PdfFileReader(file)
+                    number_of_pages = read_pdf.getNumPages()
+                    content = ''
+                    page = read_pdf.getPage(0)
+                    page_content = page.extractText().replace ("\n-\n", "-").replace("  ", "\n ").replace("\n\n", "\n \n").replace("—", "\n ").replace("  ","\n ").replace("Einsichten in den Psalter","\n Einsichten in den Psalter").replace("Beat Weber", "Beat Weber\n ").replace("1 Darstellung", "\n").split("\n \n \n \n")[0]
+                    if page_content.count ("\n") < 4:
+                        page_content = page_content + page.extractText().replace ("\n-\n", "-").replace("\n\n", "\n \n").split("\n \n \n \n")[1]
+                    if "\n1" in page_content:
+                        page_content = page_content.split("\n1")[0]
+                    if page_content.count ("\n") < 3:
+                        page_content = page_content + page.extractText().split("\n1")[1]
+                    if "ﬁ" in page_content:
+                        page_content = page_content.split("ﬁ")[0]
+                    counter = 0
+                    title =""
+                    author = ""
+                    counter = 0
+                    for line in page_content.split("\n"):
+                        if line.strip() != "":
+                            if counter == 0:
+                                author = line.strip()
+                                if len(author.split(" "))>1:
+                                    counter = 2
+                                else: 
+                                    counter = 1
+                                if author.endswith (","):
+                                    counter = 6
+                            elif counter == 6:
+                                author = author + " "+ line.strip()
+                                if len(author.split(" "))>=1:
+                                    counter = 2
+                                else: 
+                                    counter = 1
+                                if author.endswith (","):
+                                    counter = 6
+                            elif counter == 1:
+                                author = author + " "+line.strip()
+                                counter = 2
+                            elif  list(filter(line.strip().startswith, pref_list)) != []:
+                                counter = 3
+                            elif counter == 2:
+                                title = title +" "+ line.strip()
+                    title = title.strip()
+                    author = author.strip()
+                    if (not "!" in author) and (not "ˇ" in author) and (not "ˆ" in author) and (not ":" in author) and (not '"' in author):
+                        docid = year+":"+author.replace(" ","_")+":"+title[:10]
+                        for i in range(0 , number_of_pages ):  
+                            pageObj = read_pdf.getPage(i)
+                            content = content+"\n"+ pageObj.extractText()
+                        if options.usebible:
+                            # Bibelstellen
+                            bs = scriptures.extract(content)
+                            if not options.verbose:
+                                print ("Found Bible References: "+str(len(bs)))
+                            for s in bs:
+                                if s[0].replace(" ","_") not in G:
+                                    # Create new node for book
+                                    nodedict={}
+                                    nodedict['Name'] = s[0].replace(" ","_")
+                                    nodedict['Type'] = "biblicalbook"
+                                    nodedict['Title'] = s[0]
+                                    G.add_node(nodedict['Name'])
+                                    G.nodes[nodedict['Name']].update(nodedict) 
+                                # Kante hinzufügen
+                                G.add_edge (docid, s[0].replace(" ","_"))
+                                G[docid][s[0].replace(" ","_")]['Type'] = 'hasRelation'
+                                G[docid][s[0].replace(" ","_")]['Chapter,Verse'] = str(s[1])+":"+str(s[2])+"-"+str(s[3])+":"+str(s[4])
+                        if options.usene:
+                            # NER
+                            nlp = spacy.load('de_core_news_sm') # load German language model
+                            doc = nlp(content)
+                            NEPersons = []
+                            if not options.verbose:
+                                print ("Found NE: "+str(len(doc.ents)))
+                            for ent in doc.ents:
+                                if str(ent.label_) == "PER":
+                                    parts = ent.text.strip().split(" ")
+                                    #print (str(len(parts)))
+                                    if len(parts) > 1 and len(parts)<4:
+                                        stimmt = True
+                                        for p in parts:
+                                            if len(p)<3:
+                                                stimmt = False
+                                        if stimmt:
+                                            NEPersons.append (ent.text.strip().replace ("\n", ""))
+                            for ne in NEPersons:
+                                if ne.replace(" ","_") not in G:
+                                    # create node
+                                    nodedict={}
+                                    nodedict['Name'] = ne.replace(" ","_")
+                                    nodedict['Type'] = "person"
+                                    nodedict['Title'] = ne
+                                    G.add_node(nodedict['Name'])
+                                    G.nodes[nodedict['Name']].update(nodedict) 
+                                # Kante hinzufügen
+                                G.add_edge (docid, ne.replace(" ","_"))
+                                G[docid][ne.replace(" ","_")]['Type'] = 'hasRelation'
+                                    
+                except Exception as e:
+                    if not options.verbose:
+                        print("Exception: "+str(e))
+
 
 G.remove_nodes_from(list(nx.isolates(G)))
 nx.write_graphml(G,options.outputfile)

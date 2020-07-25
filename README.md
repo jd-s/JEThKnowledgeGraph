@@ -6,6 +6,8 @@ A simple Python tool to convert articles published in JETh format into a knowled
 
 * Parses PDF for Title/Author and citations using anystyle.
 * Queries IXTheo for Keywords
+* Uses spacy for NER
+* Uses scriptures to extract bible references
 
 # Usage
 
@@ -18,6 +20,13 @@ python3 buildGraph.py -i /tmp/Input/ -o /tmp/testn.graphml
 To avoid the output, use ```---verbose``` or ```-v```. -c will avoid citations and -x will not query IXTheo.
 
 Feel free to adjust the Black/Whitelists in bwlists.py to improve the quality.
+
+# Dependencies
+
+```
+python -m spacy download de_core_news_sm
+```
+
 
 # Things to do...
 
